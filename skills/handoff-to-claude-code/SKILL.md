@@ -20,6 +20,9 @@ machine to confirm the CLI is installed and logged in.
 | Claude may | read, search, run commands | everything, including edits |
 | You should | relay the text **verbatim** | summarize what happened |
 
+`chat` withholds Edit and Write, but it can still run shell commands - so it is the right mode
+when nothing *should* change, not a guarantee that nothing *can*.
+
 ```bash
 bash "$SKILL_DIR/scripts/handoff.sh" chat  "Why does this crash on startup?"
 bash "$SKILL_DIR/scripts/handoff.sh" agent "Port the auth module to the new API and run the tests"
@@ -32,7 +35,10 @@ Both commands print Claude's output, then a footer:
 session: 6b1c…   model: claude-opus-5   cost_usd: 0.12   duration_s: 41   dir: /path
 ```
 
-The footer is for you, not the user. Never show it to them.
+The footer is for you, not the user. Never show it to them - except `model:`, which is the name
+to use in the attribution line below. It is the model that did the work, already disambiguated
+from the auxiliary model that permission checking runs in the background; take it as given
+rather than reasoning about token counts yourself.
 
 For a long or multi-line prompt, pass `-` and pipe it in:
 
@@ -86,7 +92,12 @@ bash "$SKILL_DIR/scripts/handoff.sh" agent --background "Migrate all call sites"
 bash "$SKILL_DIR/scripts/handoff.sh" status <job-id>
 bash "$SKILL_DIR/scripts/handoff.sh" tail   <job-id> -n 40
 bash "$SKILL_DIR/scripts/handoff.sh" wait   <job-id> --timeout 600
+bash "$SKILL_DIR/scripts/handoff.sh" kill   <job-id>
 ```
+
+`kill` stops the run and everything it spawned. Use it if the user changes their mind, or if a
+job is stuck - a job left running keeps spending the user's subscription. `status` reports
+`died` for a job that vanished without finishing.
 
 ## Other options
 

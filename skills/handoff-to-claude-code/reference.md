@@ -8,9 +8,24 @@
 | `agent [options] <task\|->` | Do the work. All tools available. |
 | `status <job-id>` | Report a background job: status, exit code, output path. |
 | `tail <job-id> [-n N]` | Last N lines (default 50) of a background job's output. |
-| `wait <job-id> [--timeout S]` | Block until the job ends, print its output, exit with its code. Exits 2 on timeout. |
+| `wait <job-id> [--timeout S]` | Block until the job ends, print its output, exit with its code. Exits 2 on timeout. `S` must be a whole number of seconds. |
+| `kill <job-id>` | Stop a background job: `SIGTERM` to its process group, `SIGKILL` after 10s. Reaps `claude` and anything it spawned. |
 | `sessions` | Last 20 threads recorded for the current directory. |
 | `doctor` | Check the CLI, authentication, jq, and the state directory. |
+
+`status`, `tail`, `wait`, `kill`, `sessions` and `doctor` also accept `--dir <path>`. Jobs and
+threads are scoped to the directory they ran in, so a run started with `--dir` has to be queried
+with the same `--dir`:
+
+```bash
+handoff.sh agent --dir ../service --background "Migrate the call sites"
+handoff.sh status   --dir ../service <job-id>
+handoff.sh sessions --dir ../service
+```
+
+`status`, `tail`, `wait` and `kill` fall back to searching every project for the job id, so they
+usually work without it. `sessions` and `doctor` have no such fallback - without `--dir` they
+report on the current directory only.
 
 ## Options for `chat` / `agent`
 
@@ -39,10 +54,57 @@ Both modes:
 - `--output-format json` when `jq` is available, so the session id and cost can be read back.
 
 `chat` additionally passes `--tools "Read,Grep,Glob,Bash,WebSearch,WebFetch"`. Bash is included
-so Claude can investigate before answering; Edit and Write are withheld so a conversation cannot
-rewrite the tree. Note that `--tools` restricts built-in tools only - MCP tools are unaffected.
+so Claude can investigate before answering; Edit and Write are withheld so a conversation does
+not *casually* edit files.
+
+**This is not a sandbox.** Bash is in the list, `--permission-mode auto` auto-approves tool
+calls, and `printf 'x' > file` rewrites the tree perfectly well without Edit or Write. Withholding
+them removes the obvious path, not every path. Two further limits worth knowing: `--tools`
+restricts built-in tools only, so MCP tools are unaffected; and it cannot constrain what a shell
+command does once Bash is granted.
+
+So treat `chat` as "a run that should not need to change anything", not as a guarantee that it
+cannot. If a prompt genuinely must not touch the tree, run it somewhere the tree is not - a
+`--dir` pointing at a copy - rather than relying on the tool list.
 
 `--bare` is never passed: it skips OAuth and keychain reads, which breaks subscription auth.
+
+## The metadata footer
+
+Every `chat` / `agent` run ends with a footer meant for the calling agent, not the user:
+
+```
+--- handoff metadata ---
+session: 6b1c…   model: claude-opus-5[1m]   cost_usd: 0.12   duration_s: 41   dir: /path
+```
+
+**`model:` is the most expensive entry in `modelUsage`.** The result JSON has no top-level
+`model` field, so the wrapper infers which model did the work, and cost is what it sorts on.
+
+This matters because `--permission-mode auto` runs a safety classifier on a small haiku model,
+so a second model shows up in `modelUsage` on every run whether or not you asked for it. Token
+counts cannot tell the two apart, because the working model's context is nearly all cache reads
+and those are counted separately from `inputTokens`. On a real one-line run:
+
+| model | inputTokens + outputTokens | costUSD |
+| --- | --- | --- |
+| `claude-haiku-4-5-20251001` (classifier) | 534 | 0.00059 |
+| `claude-opus-5[1m]` (did the work) | 6 | 0.03811 |
+
+Sorting on tokens picks the classifier; sorting on cost picks the model that did the work.
+
+Two consequences worth knowing:
+
+- On a subscription run `costUSD` is a notional price - nothing is actually charged. It is used
+  here only as a proxy for *which model did the heavy lifting*, which it reports faithfully.
+  `cost_usd` in the footer is likewise indicative, not a bill.
+- When `modelUsage` is empty or absent, `model:` falls back to whatever `--model` was passed, or
+  the literal `(user default)`. It is never the string `null`.
+
+An earlier version of this wrapper picked the busiest model by token count after discarding any
+model whose name matched `haiku`. That misreported whenever haiku was itself the working model,
+since the filter then discarded the real answer along with the classifier. Cost has no such
+blind spot and needs no name matching.
 
 ## Authentication
 
@@ -78,10 +140,26 @@ Everything lives under `${XDG_STATE_HOME:-~/.local/state}/handoff-to-claude-code
 
 ```
 sessions.tsv          started_at, session_id, mode, first 80 chars of the prompt
-jobs/<job-id>/        cmd, pid, started_at, status, exit_code, output.txt, stderr.txt
+jobs/<job-id>/        cmd, pgid, prompt.txt, started_at, status,
+                      exit_code, output.txt, stderr.txt
 ```
 
 Nothing is written into the user's project.
+
+`pgid` is a process *group*, not a pid: the job is forked under job control so the whole
+tree - the wrapper, `claude`, and anything `claude` spawns - shares one group and can be
+signalled together. `prompt.txt` holds the prompt, which is fed to the background run on
+stdin rather than passed as an argument.
+
+A job's `status` is one of:
+
+| Status | Meaning |
+| --- | --- |
+| `running` | Still going. |
+| `done` | Finished, exit code 0. |
+| `failed` | Finished, non-zero exit code. |
+| `killed` | Stopped by `handoff.sh kill`. |
+| `died` | The process group vanished without recording an exit code - killed from outside, or OOM. |
 
 ## Environment overrides
 
@@ -97,7 +175,7 @@ Nothing is written into the user's project.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | Wrapper error (bad arguments, unusable prompt) or `claude` reported `is_error`. |
+| 1 | Wrapper error (bad arguments, unusable prompt) or `claude` reported `is_error`. Also `wait` on a job that died without recording an exit code. |
 | 2 | `wait` timed out while the job was still running. |
 | other | Propagated from `claude`. |
 
@@ -116,4 +194,10 @@ burns time.
 the user.
 
 **A background job stays `running` forever** - `claude` may be waiting on something. Inspect
-`stderr.txt` in the job directory (path from `status`) and kill the pid in `pid`.
+`stderr.txt` in the job directory (path from `status`), then `handoff.sh kill <job-id>`, which
+signals the job's whole process group. Killing the recorded pid by hand is not enough: it would
+leave `claude` running and still consuming quota.
+
+**A job reports `died`** - its process group disappeared without recording an exit code. It was
+killed from outside the wrapper, or the OOM killer took it. `output.txt` holds whatever was
+produced before it went.

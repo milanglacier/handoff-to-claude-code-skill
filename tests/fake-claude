@@ -54,7 +54,9 @@ if [ "$json_mode" = 1 ]; then
     # Hand-rolled JSON so the stub itself needs no dependencies.
     escaped="$(printf '%s' "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{printf "%s\\n", $0}')"
     usage="${FAKE_CLAUDE_MODEL_USAGE:-}"
-    [ -n "$usage" ] || usage='{"claude-opus-5":{"inputTokens":10,"outputTokens":5}}'
+    # Mirrors the real shape: cacheReadInputTokens is billed apart from inputTokens,
+    # and costUSD is what tells the working model from the auto-mode classifier.
+    [ -n "$usage" ] || usage='{"claude-opus-5":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":3800,"costUSD":0.0123,"canonicalModel":"claude-opus-5"}}'
     printf '{"type":"result","subtype":"success","is_error":%s,"result":"%s","session_id":"%s","total_cost_usd":0.0123,"modelUsage":%s}\n' \
         "$is_error" "${escaped%\\n}" "$session" "$usage"
 else

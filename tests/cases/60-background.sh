@@ -35,4 +35,27 @@ rc=$?
 assert_eq "$rc" "3" "wait propagates the failing exit code"
 assert_contains "$(handoff status "$job" 2>/dev/null)" "status: failed" "a failed job is marked failed"
 
+# The background path re-invokes this script, so anything it cannot round-trip
+# through argv breaks only in the background - and silently, since the caller
+# already has its job id and a clean exit by then.
+unset FAKE_CLAUDE_EXIT
+
+out="$(handoff agent --background -- --add-dir /tmp "passthrough task" 2>/dev/null)"
+job="$(printf '%s' "$out" | awk '/^job: /{print $2}')"
+handoff wait "$job" --timeout 30 >/dev/null 2>&1
+assert_eq "$?" "0" "--background survives a -- passthrough"
+assert_argv_pair "--add-dir" "/tmp"
+assert_argv_has "passthrough task"
+
+# A markdown bullet is an entirely ordinary way to start a task description.
+out="$(printf -- '- Refactor the parser\n- Run the tests\n' | handoff agent --background - 2>/dev/null)"
+job="$(printf '%s' "$out" | awk '/^job: /{print $2}')"
+handoff wait "$job" --timeout 30 >/dev/null 2>&1
+assert_eq "$?" "0" "--background survives a prompt beginning with -"
+assert_argv_has "- Refactor the parser
+- Run the tests"
+
+out="$(handoff wait "$job" --timeout abc 2>&1)"
+assert_contains "$out" "whole number of seconds" "a non-numeric --timeout is rejected up front"
+
 finish

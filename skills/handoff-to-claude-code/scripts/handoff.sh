@@ -25,8 +25,12 @@ Usage:
   handoff.sh status <job-id>              Report a background job
   handoff.sh tail   <job-id> [-n N]       Show the tail of a background job's output
   handoff.sh wait   <job-id> [--timeout S] Block until a background job finishes
+  handoff.sh kill   <job-id>              Stop a background job and all it spawned
   handoff.sh sessions                     List recent threads for this directory
   handoff.sh doctor                       Preflight self-check
+
+status, tail, wait, kill, sessions and doctor all take --dir <path> to look at a
+directory other than the cwd. Pass the same --dir you ran the job with.
 
 Options for chat/agent:
   --session <id>     Continue a specific thread (id comes from a previous run)
@@ -101,7 +105,7 @@ apply_auth_guard() {
 classify_failure() {
     # $1: combined stdout+stderr text. Prints a hint, or nothing when unrecognised.
     case "$1" in
-    *"Login expired"* | *"run /login"* | *"Please run /login"*)
+    *"Login expired"* | *"run /login"*)
         printf 'the Claude Code login has expired. A human must run `claude` and /login. Do not retry.' ;;
     *"usage limit"* | *"Usage limit"* | *"rate_limit"* | *"Rate limit"*)
         printf 'the subscription usage limit was hit. Retrying now will not help; wait for the reset.' ;;
@@ -151,6 +155,19 @@ build_claude_args() {
     fi
 }
 
+prompt_excerpt() {
+    # $1 prompt, $2 max length. `cut -c` counts bytes under LC_ALL=C, so it can
+    # split a multibyte character and leave invalid UTF-8 in the ledger. iconv -c
+    # drops whatever partial sequence that leaves; without iconv the worst case is
+    # one mangled character in a display-only field.
+    local out
+    out="$(printf '%s' "$1" | tr '\n\t' '  ' | cut -c"1-$2")"
+    if command -v iconv >/dev/null 2>&1; then
+        out="$(printf '%s' "$out" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)"
+    fi
+    printf '%s' "$out"
+}
+
 record_session() {
     # $1 state dir, $2 session id, $3 mode, $4 prompt
     local dir="$1" sid="$2" mode="$3" prompt="$4"
@@ -158,7 +175,7 @@ record_session() {
     mkdir -p "$dir"
     printf '%s\t%s\t%s\t%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sid" "$mode" \
-        "$(printf '%s' "$prompt" | tr '\n\t' '  ' | cut -c1-80)" \
+        "$(prompt_excerpt "$prompt" 80)" \
         >>"$dir/sessions.tsv"
 }
 
@@ -172,7 +189,9 @@ run_foreground() {
     build_claude_args
 
     start="$(date +%s)"
-    raw="$(cd "$WORKDIR" && "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" "$PROMPT" 2>"$err_file")"
+    # `--` ends claude's own option parsing. Without it a prompt starting with `-`
+    # (a markdown bullet, most often) is rejected as an unknown option by the CLI.
+    raw="$(cd "$WORKDIR" && "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" -- "$PROMPT" 2>"$err_file")"
     rc=$?
     elapsed=$(($(date +%s) - start))
 
@@ -190,16 +209,14 @@ run_foreground() {
         sid="$(printf '%s' "$raw" | "$JQ_BIN" -r '.session_id // empty')"
         cost="$(printf '%s' "$raw" | "$JQ_BIN" -r '.total_cost_usd // empty')"
         # There is no top-level model field, and modelUsage also lists the auxiliary
-        # haiku model that auto mode uses for its safety classifier - which often
-        # out-tokens the main model, whose input is mostly cached. So drop haiku
-        # entries first, and only then take the busiest.
+        # haiku model that auto mode uses for its safety classifier. Token counts
+        # cannot tell the two apart: the main model's input is mostly cache reads,
+        # which are billed separately from inputTokens, so the classifier routinely
+        # out-tokens it (521 vs 2 on a real run). Cost is not fooled by that - the
+        # model doing the work always dominates on price - so take the priciest.
         model_used="$(printf '%s' "$raw" | "$JQ_BIN" -r '
             .model
-            // (.modelUsage // {} | to_entries as $all
-                | ($all | map(select(.key | test("haiku"; "i") | not))) as $main
-                | (if ($main | length) > 0 then $main else $all end)
-                | max_by((.value.inputTokens // 0) + (.value.outputTokens // 0))
-                | .key)
+            // (.modelUsage // {} | to_entries | max_by(.value.costUSD // 0) | .key)
             // empty')"
         if [ "$(printf '%s' "$raw" | "$JQ_BIN" -r '.is_error // false')" = true ]; then
             hint="$(classify_failure "$raw")"
@@ -236,30 +253,68 @@ run_background() {
 
     printf '%s\n' "running" >"$job_dir/status"
     printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$job_dir/started_at"
-    printf '%s %s %s\n' "$MODE" "$WORKDIR" "$(printf '%s' "$PROMPT" | tr '\n' ' ' | cut -c1-200)" >"$job_dir/cmd"
+    printf '%s %s %s\n' "$MODE" "$WORKDIR" "$(prompt_excerpt "$PROMPT" 200)" >"$job_dir/cmd"
+
+    # The prompt goes to the child on stdin, never as an argument: re-parsing it as
+    # argv breaks any prompt whose first character is `-` (a markdown bullet, say).
+    # The -- separator has to be rebuilt here too, since PASSTHRU was flattened out
+    # of it during parsing.
+    printf '%s' "$PROMPT" >"$job_dir/prompt.txt"
+    local child_argv=("$MODE" "${FG_ARGV[@]}")
+    [ ${#PASSTHRU[@]} -gt 0 ] && child_argv+=(-- "${PASSTHRU[@]}")
+    child_argv+=(-)
 
     (
+        # Job control puts the fork in its own process group, so `kill -- -<pgid>`
+        # reaps claude and everything it spawned rather than just this shim.
+        set -m
         HANDOFF_JOB_DIR="$job_dir" \
             nohup bash -c '
                 job="$HANDOFF_JOB_DIR"
-                bash "$@" >"$job/output.txt" 2>"$job/stderr.txt"
+                bash "$@" <"$job/prompt.txt" >"$job/output.txt" 2>"$job/stderr.txt"
                 ec=$?
                 printf "%s\n" "$ec" >"$job/exit_code"
-                if [ "$ec" -eq 0 ]; then printf "done\n" >"$job/status"; else printf "failed\n" >"$job/status"; fi
-            ' _ "$SCRIPT_PATH" "${FG_ARGV[@]}" >/dev/null 2>&1 &
-        printf '%s\n' "$!" >"$job_dir/pid"
+                if [ -f "$job/killed" ]; then printf "killed\n" >"$job/status"
+                elif [ "$ec" -eq 0 ]; then printf "done\n" >"$job/status"
+                else printf "failed\n" >"$job/status"; fi
+            ' _ "$SCRIPT_PATH" "${child_argv[@]}" </dev/null >/dev/null 2>&1 &
+        printf '%s\n' "$!" >"$job_dir/pgid"
     )
 
+    # Carry --dir into the hint, or it will not find the job it just started.
+    local dir_hint=""
+    [ "$WORKDIR" = "$PWD" ] || dir_hint=" --dir $WORKDIR"
     printf 'job: %s\n' "$job_id"
-    printf 'status_cmd: %s status %s\n' "$SCRIPT_PATH" "$job_id"
+    printf 'status_cmd: %s status%s %s\n' "$SCRIPT_PATH" "$dir_hint" "$job_id"
     printf 'output_file: %s\n' "$job_dir/output.txt"
 }
 
 # --- job commands ----------------------------------------------------------
 
+parse_query_opts() {
+    # Pulls `--dir <path>` out of the arguments; everything else lands in REST.
+    # Threads and jobs are scoped to the directory they ran in, so a caller that
+    # used --dir has to be able to say so when querying them too.
+    REST=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --dir)
+            [ -n "${2:-}" ] || die "--dir needs a value"
+            [ -d "$2" ] || die "--dir is not a directory: $2"
+            QUERY_DIR="$(cd "$2" && pwd)"
+            shift 2
+            ;;
+        *)
+            REST+=("$1")
+            shift
+            ;;
+        esac
+    done
+}
+
 find_job_dir() {
     local job_id="$1" dir
-    dir="$(state_dir "$PWD")/jobs/$job_id"
+    dir="$(state_dir "$QUERY_DIR")/jobs/$job_id"
     if [ -d "$dir" ]; then
         printf '%s' "$dir"
         return 0
@@ -270,9 +325,43 @@ find_job_dir() {
     printf '%s' "$dir"
 }
 
+job_alive() {
+    # $1 job dir. True while any process in the job's group is still around.
+    local pg
+    pg="$(cat "$1/pgid" 2>/dev/null)" || return 1
+    [ -n "$pg" ] && kill -0 -- "-$pg" 2>/dev/null
+}
+
+cmd_kill() {
+    local job_dir="$1" pg waited=0
+    pg="$(cat "$job_dir/pgid" 2>/dev/null)"
+    [ -n "$pg" ] || die "no process group recorded for $(basename "$job_dir")"
+    if ! job_alive "$job_dir"; then
+        note "job $(basename "$job_dir") is not running"
+        cmd_status "$job_dir"
+        return 0
+    fi
+    # Marker first, so the shim can tell a kill apart from an ordinary failure.
+    : >"$job_dir/killed"
+    kill -TERM -- "-$pg" 2>/dev/null
+    while job_alive "$job_dir" && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    job_alive "$job_dir" && kill -KILL -- "-$pg" 2>/dev/null
+    printf 'killed\n' >"$job_dir/status"
+    printf 'job: %s\nstatus: killed\n' "$(basename "$job_dir")"
+}
+
 cmd_status() {
     local job_dir="$1" status
     status="$(cat "$job_dir/status" 2>/dev/null || printf 'unknown')"
+    # A job whose group is gone but which never recorded an exit code was killed
+    # from outside; without this it reads as `running` forever.
+    if [ "$status" = running ] && ! job_alive "$job_dir" && [ ! -f "$job_dir/exit_code" ]; then
+        status=died
+        printf '%s\n' "$status" >"$job_dir/status"
+    fi
     printf 'job: %s\n' "$(basename "$job_dir")"
     printf 'status: %s\n' "$status"
     printf 'started_at: %s\n' "$(cat "$job_dir/started_at" 2>/dev/null || printf 'unknown')"
@@ -293,6 +382,12 @@ cmd_wait() {
     while :; do
         status="$(cat "$job_dir/status" 2>/dev/null || printf 'unknown')"
         [ "$status" != running ] && break
+        # Don't spin forever on a job that was killed before it could report.
+        if ! job_alive "$job_dir" && [ ! -f "$job_dir/exit_code" ]; then
+            printf 'died\n' >"$job_dir/status"
+            note "job died without reporting an exit code"
+            return 1
+        fi
         if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
             note "still running after ${timeout}s"
             return 2
@@ -309,9 +404,9 @@ cmd_wait() {
 
 cmd_sessions() {
     local file
-    file="$(state_dir "$PWD")/sessions.tsv"
+    file="$(state_dir "$QUERY_DIR")/sessions.tsv"
     [ -f "$file" ] || {
-        printf 'no recorded threads for %s\n' "$PWD"
+        printf 'no recorded threads for %s\n' "$QUERY_DIR"
         return 0
     }
     printf 'started_at\tsession_id\tmode\tprompt\n'
@@ -348,7 +443,7 @@ cmd_doctor() {
         printf 'jq: not installed (falling back to pre-generated session ids and plain-text output)\n'
     fi
 
-    printf 'state_dir: %s\n' "$(state_dir "$PWD")"
+    printf 'state_dir: %s\n' "$(state_dir "$QUERY_DIR")"
     return "$rc"
 }
 
@@ -362,6 +457,8 @@ YOLO=0
 NO_AUTH_CHECK=0
 BACKGROUND=0
 WORKDIR="$PWD"
+QUERY_DIR="$PWD"
+REST=()
 PROMPT=""
 PREGEN_SESSION=""
 PASSTHRU=()
@@ -423,7 +520,6 @@ chat | agent)
             shift
             while [ $# -gt 1 ]; do
                 PASSTHRU+=("$1")
-                FG_ARGV+=("$1")
                 shift
             done
             break
@@ -459,7 +555,6 @@ chat | agent)
     apply_auth_guard
 
     if [ "$BACKGROUND" = 1 ]; then
-        FG_ARGV=("$MODE" "${FG_ARGV[@]}" "$PROMPT")
         run_background
     else
         run_foreground
@@ -467,29 +562,43 @@ chat | agent)
     exit $?
     ;;
 status)
-    [ $# -ge 1 ] || die "status needs a job id"
-    cmd_status "$(find_job_dir "$1")"
+    parse_query_opts "$@"
+    [ ${#REST[@]} -ge 1 ] || die "status needs a job id"
+    cmd_status "$(find_job_dir "${REST[0]}")"
     ;;
 tail)
-    [ $# -ge 1 ] || die "tail needs a job id"
-    job="$1"
-    shift
+    parse_query_opts "$@"
+    [ ${#REST[@]} -ge 1 ] || die "tail needs a job id"
     lines=50
-    [ "${1:-}" = "-n" ] && lines="${2:-50}"
-    cmd_tail "$(find_job_dir "$job")" "$lines"
+    [ "${REST[1]:-}" = "-n" ] && lines="${REST[2]:-50}"
+    case "$lines" in
+    '' | *[!0-9]*) die "-n needs a whole number of lines, got: ${lines:-<empty>}" ;;
+    esac
+    cmd_tail "$(find_job_dir "${REST[0]}")" "$lines"
     ;;
 wait)
-    [ $# -ge 1 ] || die "wait needs a job id"
-    job="$1"
-    shift
+    parse_query_opts "$@"
+    [ ${#REST[@]} -ge 1 ] || die "wait needs a job id"
     timeout=0
-    [ "${1:-}" = "--timeout" ] && timeout="${2:-0}"
-    cmd_wait "$(find_job_dir "$job")" "$timeout"
+    if [ "${REST[1]:-}" = "--timeout" ]; then
+        timeout="${REST[2]:-}"
+        case "$timeout" in
+        '' | *[!0-9]*) die "--timeout needs a whole number of seconds, got: ${timeout:-<empty>}" ;;
+        esac
+    fi
+    cmd_wait "$(find_job_dir "${REST[0]}")" "$timeout"
+    ;;
+kill)
+    parse_query_opts "$@"
+    [ ${#REST[@]} -ge 1 ] || die "kill needs a job id"
+    cmd_kill "$(find_job_dir "${REST[0]}")"
     ;;
 sessions)
+    parse_query_opts "$@"
     cmd_sessions
     ;;
 doctor)
+    parse_query_opts "$@"
     cmd_doctor
     ;;
 -h | --help | help)
