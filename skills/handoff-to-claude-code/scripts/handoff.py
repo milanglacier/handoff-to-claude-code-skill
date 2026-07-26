@@ -243,10 +243,16 @@ def pick_model(usage):
     return max(usage.items(), key=lambda kv: (kv[1] or {}).get("costUSD") or 0)[0]
 
 
+def normalize_returncode(returncode):
+    """Translate Python's negative signal codes to conventional shell statuses."""
+    return 128 - returncode if returncode < 0 else returncode
+
+
 def run_foreground(o):
     sdir = state_dir(o["workdir"])
     os.makedirs(sdir, exist_ok=True)
     env = apply_auth_guard(o["no_auth_check"])
+    env["PWD"] = o["workdir"]
 
     # `--` ends claude's own option parsing. Without it a prompt starting with `-`
     # (a markdown bullet, most often) is rejected as an unknown option by the CLI.
@@ -262,14 +268,15 @@ def run_foreground(o):
     raw = proc.stdout.decode("utf-8", "replace")
     err = proc.stderr.decode("utf-8", "replace")
     elapsed = int(time.time() - start)
+    returncode = normalize_returncode(proc.returncode)
 
-    if proc.returncode != 0:
+    if returncode != 0:
         hint = classify_failure(raw + err)
         if hint:
             note("ERROR: " + hint)
         sys.stderr.write(err)
-        note("claude exited with status %d" % proc.returncode)
-        return proc.returncode
+        note("claude exited with status %d" % returncode)
+        return returncode
 
     try:
         data = json.loads(raw)

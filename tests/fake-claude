@@ -50,6 +50,8 @@ def main():
         time.sleep(float(os.environ["FAKE_CLAUDE_SLEEP"]))
     if os.environ.get("FAKE_CLAUDE_STDERR"):
         print(os.environ["FAKE_CLAUDE_STDERR"], file=sys.stderr)
+    if os.environ.get("FAKE_CLAUDE_SIGNAL"):
+        os.kill(os.getpid(), int(os.environ["FAKE_CLAUDE_SIGNAL"]))
 
     text = os.environ.get("FAKE_CLAUDE_TEXT", DEFAULT_TEXT)
     if "json" in args:

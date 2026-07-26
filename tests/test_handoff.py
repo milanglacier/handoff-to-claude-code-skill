@@ -35,6 +35,7 @@ FAKE_VARS = (
     "FAKE_CLAUDE_IS_ERROR",
     "FAKE_CLAUDE_MODEL_USAGE",
     "FAKE_CLAUDE_SLEEP",
+    "FAKE_CLAUDE_SIGNAL",
 )
 
 
@@ -345,6 +346,7 @@ print("hi")
         result = self.handoff("chat", "--dir", str(other), "a thread over there")
         self.assert_success(result)
         self.assertEqual(self.field(result.stdout, "session"), SESSION_ID)
+        self.assertEqual(self.child_env()["PWD"], str(other))
 
         result = self.handoff("sessions")
         self.assert_success(result)
@@ -375,6 +377,7 @@ print("hi")
 
         result = self.handoff("wait", job_id, "--dir", str(other), "--timeout", "30")
         self.assert_success(result)
+        self.assertEqual(self.child_env()["PWD"], str(other))
 
         result = self.handoff("status", "--dir", str(other), job_id)
         self.assert_success(result)
@@ -509,6 +512,33 @@ print("hi")
         result = self.handoff("status", hard_killed_job)
         self.assert_success(result)
         self.assertIn("status: died", result.stdout)
+
+    def test_signal_exit_codes_are_normalized(self):
+        self.with_subscription()
+        self.env["FAKE_CLAUDE_SIGNAL"] = str(signal.SIGTERM)
+
+        result = self.handoff("chat", "terminate")
+        self.assertEqual(result.returncode, 128 + signal.SIGTERM)
+        self.assertIn(
+            "claude exited with status {}".format(128 + signal.SIGTERM),
+            result.stderr,
+        )
+
+        result = self.handoff("agent", "--background", "terminate in background")
+        self.assert_success(result)
+        job_id = self.field(result.stdout, "job")
+        self.remember_job_group(job_id)
+
+        result = self.handoff("wait", job_id, "--timeout", "30")
+        self.assertEqual(result.returncode, 128 + signal.SIGTERM)
+
+        result = self.handoff("status", job_id)
+        self.assert_success(result)
+        self.assertIn("status: failed", result.stdout)
+        self.assertIn(
+            "exit_code: {}".format(128 + signal.SIGTERM),
+            result.stdout,
+        )
 
     def test_non_retryable_and_unknown_errors(self):
         self.with_subscription()
