@@ -1,6 +1,6 @@
 ---
 name: handoff-to-claude-code
-description: Hand a task or a question to Claude Code (the `claude` CLI) and relay what it produces. Use ONLY when the user explicitly asks for it - "ask Claude Code", "hand this to claude", "let claude do it", "让 claude code 做". Covers both agentic work (Claude edits files and runs commands) and chat (Claude's answer is relayed to the user verbatim). Do not use it on your own judgment that a task looks hard, and do not use it if you are Claude Code yourself.
+description: Hand a task or a question to Claude Code (the `claude` CLI) and relay what it produces. Use ONLY when the user explicitly asks for it. Do not use it on your own judgment that a task looks hard, and do not use it if you are Claude Code yourself.
 ---
 
 # Handoff to Claude Code
