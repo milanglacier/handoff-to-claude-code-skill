@@ -1,66 +1,80 @@
-#!/usr/bin/env bash
-# Stand-in for the real `claude` binary. Records how it was called, then emits
-# canned output so the wrapper can be tested without spending subscription quota.
-#
-# Controlled by the environment:
-#   FAKE_CLAUDE_ARGV_LOG   file to append the full argv to (one arg per line)
-#   FAKE_CLAUDE_ENV_LOG    file to record auth-relevant env vars in
-#   FAKE_CLAUDE_TEXT       answer text to emit (default: a short markdown blob)
-#   FAKE_CLAUDE_SESSION    session id to report in JSON mode
-#   FAKE_CLAUDE_EXIT       exit code (default 0)
-#   FAKE_CLAUDE_STDERR     text to emit on stderr
-#   FAKE_CLAUDE_IS_ERROR   set to 1 to report is_error=true in JSON mode
-#   FAKE_CLAUDE_MODEL_USAGE  raw JSON object to use as modelUsage
-#   FAKE_CLAUDE_SLEEP      seconds to sleep before answering
+#!/usr/bin/env python3
+"""Offline stand-in for the Claude CLI used by test_handoff.py."""
 
-set -u
+import json
+import os
+import sys
+import time
 
-if [ "${1:-}" = "--version" ]; then
-    printf '9.9.9 (Fake Claude)\n'
-    exit 0
-fi
 
-if [ -n "${FAKE_CLAUDE_ARGV_LOG:-}" ]; then
-    : >"$FAKE_CLAUDE_ARGV_LOG"
-    for arg in "$@"; do printf '%s\n' "$arg" >>"$FAKE_CLAUDE_ARGV_LOG"; done
-fi
-
-if [ -n "${FAKE_CLAUDE_ENV_LOG:-}" ]; then
-    {
-        printf 'ANTHROPIC_API_KEY=%s\n' "${ANTHROPIC_API_KEY-<unset>}"
-        printf 'ANTHROPIC_AUTH_TOKEN=%s\n' "${ANTHROPIC_AUTH_TOKEN-<unset>}"
-        printf 'PWD=%s\n' "$PWD"
-    } >"$FAKE_CLAUDE_ENV_LOG"
-fi
-
-[ -n "${FAKE_CLAUDE_SLEEP:-}" ] && sleep "$FAKE_CLAUDE_SLEEP"
-[ -n "${FAKE_CLAUDE_STDERR:-}" ] && printf '%s\n' "$FAKE_CLAUDE_STDERR" >&2
-
-text="${FAKE_CLAUDE_TEXT:-# Answer
+DEFAULT_TEXT = """# Answer
 
 Some **markdown** text.
 - a
-- b}"
-session="${FAKE_CLAUDE_SESSION:-11111111-2222-3333-4444-555555555555}"
+- b"""
+DEFAULT_USAGE = {
+    "claude-opus-5": {
+        "inputTokens": 10,
+        "outputTokens": 5,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 3800,
+        "costUSD": 0.0123,
+        "canonicalModel": "claude-opus-5",
+    }
+}
 
-json_mode=0
-for arg in "$@"; do
-    [ "$arg" = "json" ] && json_mode=1
-done
 
-if [ "$json_mode" = 1 ]; then
-    is_error=false
-    [ "${FAKE_CLAUDE_IS_ERROR:-}" = 1 ] && is_error=true
-    # Hand-rolled JSON so the stub itself needs no dependencies.
-    escaped="$(printf '%s' "$text" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{printf "%s\\n", $0}')"
-    usage="${FAKE_CLAUDE_MODEL_USAGE:-}"
-    # Mirrors the real shape: cacheReadInputTokens is billed apart from inputTokens,
-    # and costUSD is what tells the working model from the auto-mode classifier.
-    [ -n "$usage" ] || usage='{"claude-opus-5":{"inputTokens":10,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":3800,"costUSD":0.0123,"canonicalModel":"claude-opus-5"}}'
-    printf '{"type":"result","subtype":"success","is_error":%s,"result":"%s","session_id":"%s","total_cost_usd":0.0123,"modelUsage":%s}\n' \
-        "$is_error" "${escaped%\\n}" "$session" "$usage"
-else
-    printf '%s\n' "$text"
-fi
+def write_json(path, value):
+    if path:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(value, handle)
 
-exit "${FAKE_CLAUDE_EXIT:-0}"
+
+def main():
+    args = sys.argv[1:]
+    if args == ["--version"]:
+        print("9.9.9 (Fake Claude)")
+        return 0
+
+    write_json(os.environ.get("FAKE_CLAUDE_ARGV_LOG"), args)
+    write_json(
+        os.environ.get("FAKE_CLAUDE_ENV_LOG"),
+        {
+            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY"),
+            "ANTHROPIC_AUTH_TOKEN": os.environ.get("ANTHROPIC_AUTH_TOKEN"),
+            "PWD": os.environ.get("PWD"),
+        },
+    )
+
+    if os.environ.get("FAKE_CLAUDE_SLEEP"):
+        time.sleep(float(os.environ["FAKE_CLAUDE_SLEEP"]))
+    if os.environ.get("FAKE_CLAUDE_STDERR"):
+        print(os.environ["FAKE_CLAUDE_STDERR"], file=sys.stderr)
+
+    text = os.environ.get("FAKE_CLAUDE_TEXT", DEFAULT_TEXT)
+    if "json" in args:
+        raw_usage = os.environ.get("FAKE_CLAUDE_MODEL_USAGE")
+        usage = json.loads(raw_usage) if raw_usage is not None else DEFAULT_USAGE
+        print(
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": os.environ.get("FAKE_CLAUDE_IS_ERROR") == "1",
+                    "result": text,
+                    "session_id": os.environ.get(
+                        "FAKE_CLAUDE_SESSION",
+                        "11111111-2222-3333-4444-555555555555",
+                    ),
+                    "total_cost_usd": 0.0123,
+                    "modelUsage": usage,
+                }
+            )
+        )
+    else:
+        print(text)
+    return int(os.environ.get("FAKE_CLAUDE_EXIT", "0"))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

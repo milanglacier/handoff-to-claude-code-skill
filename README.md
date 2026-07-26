@@ -77,8 +77,8 @@ for every flag, the permission model, and troubleshooting.
 ## Tests
 
 ```bash
-bash tests/run.sh                 # offline, uses a fake claude binary, spends nothing
-HANDOFF_LIVE=1 bash tests/run.sh  # also runs one real round-trip
+python3 tests/test_handoff.py                 # offline, uses a fake claude binary, spends nothing
+HANDOFF_LIVE=1 python3 tests/test_handoff.py  # also runs one real round-trip
 ```
 
 ## License
