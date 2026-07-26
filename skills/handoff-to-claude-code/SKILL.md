@@ -9,7 +9,7 @@ Delegates work to a local Claude Code session through `claude -p`. The user's Cl
 subscription pays for it, so only run it when the user asked you to.
 
 `SKILL_DIR` below is the directory holding this SKILL.md; the wrapper is
-`$SKILL_DIR/scripts/handoff.sh`. Run `bash $SKILL_DIR/scripts/handoff.sh doctor` once on a new
+`$SKILL_DIR/scripts/handoff.py`. Run `python3 $SKILL_DIR/scripts/handoff.py doctor` once on a new
 machine to confirm the CLI is installed and logged in.
 
 ## Pick a mode
@@ -24,8 +24,8 @@ machine to confirm the CLI is installed and logged in.
 when nothing *should* change, not a guarantee that nothing *can*.
 
 ```bash
-bash "$SKILL_DIR/scripts/handoff.sh" chat  "Why does this crash on startup?"
-bash "$SKILL_DIR/scripts/handoff.sh" agent "Port the auth module to the new API and run the tests"
+python3 "$SKILL_DIR/scripts/handoff.py" chat  "Why does this crash on startup?"
+python3 "$SKILL_DIR/scripts/handoff.py" agent "Port the auth module to the new API and run the tests"
 ```
 
 Both commands print Claude's output, then a footer:
@@ -43,7 +43,7 @@ rather than reasoning about token counts yourself.
 For a long or multi-line prompt, pass `-` and pipe it in:
 
 ```bash
-bash "$SKILL_DIR/scripts/handoff.sh" agent - <<'EOF'
+python3 "$SKILL_DIR/scripts/handoff.py" agent - <<'EOF'
 Refactor the parser so that ...
 EOF
 ```
@@ -72,7 +72,7 @@ The wrapper prints a session id. Keep it, and pass it back for every follow-up s
 its context:
 
 ```bash
-bash "$SKILL_DIR/scripts/handoff.sh" chat --session 6b1c… "and what about the timeout path?"
+python3 "$SKILL_DIR/scripts/handoff.py" chat --session 6b1c… "and what about the timeout path?"
 ```
 
 Sessions are scoped to the directory the run happened in. Stay in the same directory (or pass the
@@ -88,11 +88,11 @@ An agentic task can run for many minutes and outlast your shell tool's timeout.
 - Otherwise add `--background`, which returns a job id immediately:
 
 ```bash
-bash "$SKILL_DIR/scripts/handoff.sh" agent --background "Migrate all call sites"
-bash "$SKILL_DIR/scripts/handoff.sh" status <job-id>
-bash "$SKILL_DIR/scripts/handoff.sh" tail   <job-id> -n 40
-bash "$SKILL_DIR/scripts/handoff.sh" wait   <job-id> --timeout 600
-bash "$SKILL_DIR/scripts/handoff.sh" kill   <job-id>
+python3 "$SKILL_DIR/scripts/handoff.py" agent --background "Migrate all call sites"
+python3 "$SKILL_DIR/scripts/handoff.py" status <job-id>
+python3 "$SKILL_DIR/scripts/handoff.py" tail   <job-id> -n 40
+python3 "$SKILL_DIR/scripts/handoff.py" wait   <job-id> --timeout 600
+python3 "$SKILL_DIR/scripts/handoff.py" kill   <job-id>
 ```
 
 `kill` stops the run and everything it spawned. Use it if the user changes their mind, or if a

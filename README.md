@@ -14,7 +14,7 @@ Two modes, because the deliverable differs:
 - **chat** - Claude's text is the deliverable, so the orchestrator relays it to the user verbatim.
 
 Built for [pi](https://github.com/badlogic/pi-mono), but there is nothing pi-specific in it: it is
-a `SKILL.md` and a bash script.
+a `SKILL.md` and a dependency-free Python script.
 
 ## Install
 
@@ -28,22 +28,22 @@ Or copy `skills/handoff-to-claude-code/` into your agent's skills directory
 Then check the setup:
 
 ```bash
-bash ~/.agents/skills/handoff-to-claude-code/scripts/handoff.sh doctor
+python3 ~/.agents/skills/handoff-to-claude-code/scripts/handoff.py doctor
 ```
 
-Requirements: the `claude` CLI, logged in with a Claude subscription. `jq` is optional - without
-it the wrapper pre-generates session ids and reads plain text instead of JSON.
+Requirements: the `claude` CLI, logged in with a Claude subscription, and Python 3.9+. The
+wrapper is stdlib-only - no pip install, no `jq`.
 
 ## Usage
 
 The agent drives this; you should not need to. But the wrapper is a normal CLI:
 
 ```bash
-handoff.sh chat  "Why does this crash on startup?"
-handoff.sh agent "Port the auth module to the new API and run the tests"
-handoff.sh chat --session <id> "and what about the timeout path?"
-handoff.sh agent --background "Migrate all call sites"
-handoff.sh status <job-id>
+handoff.py chat  "Why does this crash on startup?"
+handoff.py agent "Port the auth module to the new API and run the tests"
+handoff.py chat --session <id> "and what about the timeout path?"
+handoff.py agent --background "Migrate all call sites"
+handoff.py status <job-id>
 ```
 
 See [`skills/handoff-to-claude-code/reference.md`](skills/handoff-to-claude-code/reference.md)

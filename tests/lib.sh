@@ -7,7 +7,7 @@ set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-HANDOFF="$REPO_ROOT/skills/handoff-to-claude-code/scripts/handoff.sh"
+HANDOFF="$REPO_ROOT/skills/handoff-to-claude-code/scripts/handoff.py"
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -38,7 +38,7 @@ with_subscription() { : >"$CLAUDE_CONFIG_DIR/.credentials.json"; }
 without_subscription() { rm -f "$CLAUDE_CONFIG_DIR/.credentials.json"; }
 
 # handoff <args...> - run the wrapper in the temp work dir.
-handoff() { (cd "$WORK" && bash "$HANDOFF" "$@"); }
+handoff() { (cd "$WORK" && python3 "$HANDOFF" "$@"); }
 
 assert_eq() {
     if [ "$1" = "$2" ]; then ok "$3"; else

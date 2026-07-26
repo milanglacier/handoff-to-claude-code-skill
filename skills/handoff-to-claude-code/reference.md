@@ -1,4 +1,4 @@
-# handoff.sh reference
+# handoff.py reference
 
 ## Commands
 
@@ -11,16 +11,16 @@
 | `wait <job-id> [--timeout S]` | Block until the job ends, print its output, exit with its code. Exits 2 on timeout. `S` must be a whole number of seconds. |
 | `kill <job-id>` | Stop a background job: `SIGTERM` to its process group, `SIGKILL` after 10s. Reaps `claude` and anything it spawned. |
 | `sessions` | Last 20 threads recorded for the current directory. |
-| `doctor` | Check the CLI, authentication, jq, and the state directory. |
+| `doctor` | Check the CLI, authentication, the interpreter, and the state directory. |
 
 `status`, `tail`, `wait`, `kill`, `sessions` and `doctor` also accept `--dir <path>`. Jobs and
 threads are scoped to the directory they ran in, so a run started with `--dir` has to be queried
 with the same `--dir`:
 
 ```bash
-handoff.sh agent --dir ../service --background "Migrate the call sites"
-handoff.sh status   --dir ../service <job-id>
-handoff.sh sessions --dir ../service
+handoff.py agent --dir ../service --background "Migrate the call sites"
+handoff.py status   --dir ../service <job-id>
+handoff.py sessions --dir ../service
 ```
 
 `status`, `tail`, `wait` and `kill` fall back to searching every project for the job id, so they
@@ -51,7 +51,7 @@ Both modes:
 - `--permission-mode auto` (or `bypassPermissions` with `--yolo`). `auto` auto-approves tool
   calls with background safety checks. This matters: in `-p` a permission prompt is a denial, and
   `acceptEdits` *aborts the run* when Claude attempts a shell command with no allow rule.
-- `--output-format json` when `jq` is available, so the session id and cost can be read back.
+- `--output-format json`, always, so the session id and cost can be read back.
 
 `chat` additionally passes `--tools "Read,Grep,Glob,Bash,WebSearch,WebFetch"`. Bash is included
 so Claude can investigate before answering; Edit and Write are withheld so a conversation does
@@ -130,8 +130,8 @@ but never unset.
 `claude` scopes session lookup to the invocation directory and its git worktrees, so every turn
 of a thread must run from the same directory.
 
-With `jq`, the session id comes back in the result JSON. Without `jq`, the wrapper pre-generates
-a UUID and passes `--session-id`, which achieves the same thing with plain-text output.
+The session id comes back in the result JSON, which the wrapper parses with the standard
+library.
 
 ## State
 
@@ -158,7 +158,7 @@ A job's `status` is one of:
 | `running` | Still going. |
 | `done` | Finished, exit code 0. |
 | `failed` | Finished, non-zero exit code. |
-| `killed` | Stopped by `handoff.sh kill`. |
+| `killed` | Stopped by `handoff.py kill`. |
 | `died` | The process group vanished without recording an exit code - killed from outside, or OOM. |
 
 ## Environment overrides
@@ -166,7 +166,6 @@ A job's `status` is one of:
 | Variable | Purpose |
 | --- | --- |
 | `HANDOFF_CLAUDE_BIN` | Path to the `claude` binary. Default: `claude` on `PATH`. |
-| `HANDOFF_JQ_BIN` | Path to `jq`. Point it at a nonexistent path to force the no-jq code path. |
 | `XDG_STATE_HOME` | Where state is written. |
 | `CLAUDE_CONFIG_DIR` | Where subscription credentials are looked for. |
 
@@ -194,7 +193,7 @@ burns time.
 the user.
 
 **A background job stays `running` forever** - `claude` may be waiting on something. Inspect
-`stderr.txt` in the job directory (path from `status`), then `handoff.sh kill <job-id>`, which
+`stderr.txt` in the job directory (path from `status`), then `handoff.py kill <job-id>`, which
 signals the job's whole process group. Killing the recorded pid by hand is not enough: it would
 leave `claude` running and still consuming quota.
 
