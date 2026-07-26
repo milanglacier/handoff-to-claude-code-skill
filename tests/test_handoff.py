@@ -399,6 +399,32 @@ print("hi")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("whole number of lines", result.stderr)
 
+    def test_relative_directory_preserves_logical_symlink_path(self):
+        self.with_subscription()
+        real = self.root / "real" / "work"
+        linked = self.root / "linked-work"
+        real.mkdir(parents=True)
+        linked.symlink_to(real, target_is_directory=True)
+
+        default = self.handoff("doctor", cwd=linked)
+        explicit = self.handoff("doctor", "--dir", ".", cwd=linked)
+        self.assert_success(default)
+        self.assert_success(explicit)
+        self.assertEqual(
+            self.field(default.stdout, "state_dir"),
+            self.field(explicit.stdout, "state_dir"),
+        )
+
+        prompt = "thread through a logical symlink"
+        result = self.handoff("chat", "--dir", ".", prompt, cwd=linked)
+        self.assert_success(result)
+        self.assertEqual(self.field(result.stdout, "dir"), str(linked))
+        self.assertEqual(self.child_env()["PWD"], str(linked))
+
+        result = self.handoff("sessions", cwd=linked)
+        self.assert_success(result)
+        self.assertIn(prompt, result.stdout)
+
     def test_background_job_lifecycle_and_argument_round_trip(self):
         self.with_subscription()
         self.env["FAKE_CLAUDE_SLEEP"] = "2"

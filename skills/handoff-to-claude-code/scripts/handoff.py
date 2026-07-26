@@ -112,6 +112,11 @@ def logical_cwd():
     return os.getcwd()
 
 
+def resolve_dir(path):
+    """Make a path absolute without discarding logical symlinks from $PWD."""
+    return os.path.normpath(os.path.join(logical_cwd(), path))
+
+
 def project_slug(path):
     return re.sub(r"[^A-Za-z0-9]", "-", path).lstrip("-")
 
@@ -401,9 +406,10 @@ def parse_query_opts(args):
             value = args[i + 1] if i + 1 < len(args) else ""
             if not value:
                 die("--dir needs a value")
-            if not os.path.isdir(value):
+            target = resolve_dir(value)
+            if not os.path.isdir(target):
                 die("--dir is not a directory: %s" % value)
-            query_dir = os.path.abspath(value)
+            query_dir = target
             i += 2
         else:
             rest.append(args[i])
@@ -644,10 +650,11 @@ def cmd_run(mode, args):
             o["model"] = value_at(i, "--model")
             i += 2
         elif arg == "--dir":
-            target = value_at(i, "--dir")
+            value = value_at(i, "--dir")
+            target = resolve_dir(value)
             if not os.path.isdir(target):
-                die("--dir is not a directory: %s" % target)
-            o["workdir"] = os.path.abspath(target)
+                die("--dir is not a directory: %s" % value)
+            o["workdir"] = target
             i += 2
         elif arg == "--background":
             background = True
